@@ -1,0 +1,163 @@
+<!doctype html>
+<!--
+  Tests and a live demo for slides.js, no Jira needed. Open in Chrome or Edge:
+  the test results are logged to the console and shown in the page title, then a sample
+  sprint review deck opens in the presenter. Add ?slide=3 to start on a given slide,
+  ?overview to open the overview, and ?theme=light|dark, ?text=small|large, ?cover=0, ?footer=0 to try the options.
+  Headless: msedge --headless=new --allow-file-access-from-files --dump-dom test/slides.test.html
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>slides.js tests</title>
+</head>
+<body>
+  <pre id="results">running…</pre>
+  <script>globalThis.__JDS_TEST__ = true;</script>
+  <script src="../slides-style.js"></script>
+  <script src="../slides.js"></script>
+  <script type="module">
+    const S = globalThis.JiraSlides;
+    const out = [];
+    let failed = 0;
+    const check = (name, actual, expected) => {
+      const ok = JSON.stringify(actual) === JSON.stringify(expected);
+      if (!ok) failed++;
+      out.push(`${ok ? 'PASS' : 'FAIL'} ${name}${ok ? '' : `\n     expected ${JSON.stringify(expected)}\n     actual   ${JSON.stringify(actual)}`}`);
+    };
+    const titles = (d) => d.sections.map((s) => s.title);
+    const texts = (nodes) => nodes.map((n) => n.textContent.trim());
+
+    // Splitting
+    let d = S.buildSlides('<p>Intro</p><h1><a name="Goals"></a>Goals</h1><ul><li>A</li></ul><p></p><h1>Demo</h1><h2>Sub</h2><p>x</p>');
+    check('h1 split: titles', titles(d), ['Goals', 'Demo']);
+    check('h1 split: intro', texts(d.intro), ['Intro']);
+    check('h1 split: h2 stays inside the slide, blank paragraphs dropped', d.sections[1].nodes.map((n) => n.tagName), ['H2', 'P']);
+    check('h1 split: section content', texts(d.sections[0].nodes), ['A']);
+
+    d = S.buildSlides('<h2>One</h2><p>a</p><h2>Two</h2>');
+    check('no h1: falls back to h2', [d.level, titles(d)], ['H2', ['One', 'Two']]);
+
+    d = S.buildSlides('<p>Just text</p>');
+    check('no headings: everything is intro', [d.level, d.sections.length, d.intro.length], [null, 0, 1]);
+
+    d = S.buildSlides('<div class="wrap"><h1>A</h1><p>1</p><h1>B</h1><p>2</p></div>');
+    check('wrapper div: splits inside it', [titles(d), texts(d.sections[1].nodes)], [['A', 'B'], ['2']]);
+
+    d = S.buildSlides('');
+    check('empty description', [d.intro.length, d.sections.length], [0, 0]);
+
+    // Sanitizing
+    d = S.buildSlides('<h1>X</h1><p onclick="alert(1)" style="color: red; position: fixed">t<script>alert(2)<\/script><a href="javascript:alert(3)">l</a><img src="x.png" onerror="alert(4)"></p><iframe src="https://example.com"></iframe>');
+    const html = d.sections[0].nodes.map((n) => n.outerHTML).join('');
+    check('sanitize: no script, handlers, javascript: urls or iframes', /script|onclick|onerror|javascript:|iframe/i.test(html), false);
+    check('sanitize: safe inline color kept, position dropped', [/color: red/.test(html), /position/.test(html)], [true, false]);
+    check('sanitize: links open in a new tab', /target="_blank"/.test(html), true);
+
+    // Issue key
+    check('key: browse', S.detectIssueKey('https://x.atlassian.net/browse/ABC-123'), 'ABC-123');
+    check('key: board', S.detectIssueKey('https://x.atlassian.net/jira/software/projects/ABC/boards/1?selectedIssue=ABC-7'), 'ABC-7');
+    check('key: service desk queue', S.detectIssueKey('https://x.atlassian.net/jira/servicedesk/projects/SD/queues/custom/1/SD-42'), 'SD-42');
+    check('key: none', S.detectIssueKey('https://x.atlassian.net/jira/your-work'), null);
+
+    // Links to Jira issues
+    const ORIGIN = 'https://acme.atlassian.net';
+    check('linked key: browse URL', S.linkedIssueKey(`${ORIGIN}/browse/WEB-130`, ORIGIN), 'WEB-130');
+    check('linked key: relative URL', S.linkedIssueKey('/browse/WEB-131?focusedCommentId=1', ORIGIN), 'WEB-131');
+    check('linked key: board URL', S.linkedIssueKey(`${ORIGIN}/jira/software/projects/WEB/boards/1?selectedIssue=WEB-9`, ORIGIN), 'WEB-9');
+    check('linked key: other site ignored', S.linkedIssueKey('https://other.atlassian.net/browse/WEB-130', ORIGIN), null);
+    check('linked key: attachment ignored', S.linkedIssueKey(`${ORIGIN}/secure/attachment/1/image-1`, ORIGIN), null);
+
+    const ISSUES = {
+      'WEB-130': { key: 'WEB-130', summary: 'Sign-up with email', status: 'Done', category: 'done', icon: '', type: 'Story' },
+      'WEB-131': { key: 'WEB-131', summary: 'Workspace wizard', status: 'In Progress', category: 'indeterminate', icon: '', type: 'Story' },
+    };
+    const calls = [];
+    const getInfo = async (k) => { calls.push(k); return ISSUES[k] || null; };
+    const linkDeck = S.buildSlides(`
+      <a href="${ORIGIN}/browse/WEB-131">${ORIGIN}/browse/WEB-131</a>
+      <h1>Links</h1>
+      <p id="auto"><a href="${ORIGIN}/browse/WEB-130">${ORIGIN}/browse/WEB-130</a></p>
+      <p id="key"><a href="/browse/WEB-131">WEB-131</a></p>
+      <p id="custom">See <a href="${ORIGIN}/browse/WEB-130">the sign-up story</a>.</p>
+      <p id="macro"><span class="jira-issue-macro" data-jira-key="WEB-131"><a href="${ORIGIN}/browse/WEB-131" class="jira-issue-macro-key issue-link">WEB-131</a> - Workspace wizard <span class="aui-lozenge">In Progress</span></span></p>
+      <p id="ext"><a href="https://example.com/browse/X-1">https://example.com/browse/X-1</a></p>
+      <p id="unknown"><a href="${ORIGIN}/browse/WEB-999">${ORIGIN}/browse/WEB-999</a></p>`);
+    const changed = await S.enrichIssueLinks(linkDeck, ORIGIN, getInfo);
+    const node = (id) => linkDeck.sections[0].nodes.find((n) => n.id === id);
+    const chipText = (n) => [...n.querySelectorAll('.issue-chip > span')].map((s) => s.textContent);
+    check('enrich: one request per distinct issue', calls.sort(), ['WEB-130', 'WEB-131', 'WEB-999']);
+    check('enrich: links changed', changed, 5);
+    check('enrich: URL link becomes key, title and status', chipText(node('auto')), ['WEB-130', 'Sign-up with email', 'Done']);
+    check('enrich: key link becomes a chip', chipText(node('key')), ['WEB-131', 'Workspace wizard', 'In Progress']);
+    check('enrich: status colour from category', node('key').querySelector('.chip-status').className, 'chip-status cat-indeterminate');
+    check('enrich: custom text kept, status added', [node('custom').querySelector('a').textContent, node('custom').querySelector('.chip-status')?.textContent], ['the sign-up story', 'Done']);
+    check('enrich: Server issue macro replaced whole', [node('macro').children.length, chipText(node('macro'))], [1, ['WEB-131', 'Workspace wizard', 'In Progress']]);
+    check('enrich: other sites untouched', node('ext').querySelector('.issue-chip'), null);
+    check('enrich: unknown issue untouched', node('unknown').querySelector('.issue-chip'), null);
+    check('enrich: top-level link in the intro replaced', linkDeck.intro[0].className, 'issue-chip');
+
+    // Options
+    const both = '<h1>A</h1><h2>a1</h2><p>x</p><h2>a2</h2><h1>B</h1>';
+    check('split on heading 2 when asked', titles(S.buildSlides(both, 'H2')), ['a1', 'a2']);
+    check('heading 2 asked but missing: heading 1 used', [S.buildSlides('<h1>A</h1><h1>B</h1>', 'H2').level, titles(S.buildSlides('<h1>A</h1><h1>B</h1>', 'H2'))], ['H1', ['A', 'B']]);
+    const od = S.buildSlides('<p>intro</p><h1>A</h1><h1>B</h1>');
+    check('outline with cover', S.outline(od, { cover: true }).map((x) => x.title), ['Cover', 'Overview', 'A', 'B']);
+    check('outline without cover', S.outline(od, { cover: false }).map((x) => x.title), ['Overview', 'A', 'B']);
+    const host = S.createPresenter();
+    const r = S.renderDeck(host, { key: 'K-1', summary: 'Sum' }, S.buildSlides('<h1>A</h1><p>a</p><h1>B</h1>'), { theme: 'dark', footer: false, cover: false, start: 1 });
+    check('render: theme class', host.overlay.classList.contains('theme-dark'), true);
+    check('render: no cover, no footer', [r.slides.length, host.overlay.querySelectorAll('.slide-footer').length, host.overlay.querySelectorAll('.cover').length], [2, 0, 0]);
+    check('render: starts on the chosen slide', r.slides.findIndex((x) => x.classList.contains('active')), 1);
+    host.close();
+    check('render: close removes the overlay', document.getElementById('jira-description-slides'), null);
+
+    out.push(`\n${failed ? `${failed} FAILED` : 'ALL PASSED'}`);
+    document.getElementById('results').textContent = out.join('\n');
+    document.title = failed ? `FAILED ${failed}` : 'ALL PASSED';
+    console.log(out.join('\n'));
+
+    // ---- demo deck ----
+    const sample = `
+      <p>Sprint 42 · 10 – 24 Nov · Team Phoenix</p>
+      <h1><a name="SprintGoal"></a>Sprint goal</h1>
+      <p><b>Ship self-service onboarding</b> so new customers can start without a call with support.</p>
+      <ul><li>Sign-up flow with email verification</li><li>Guided workspace setup</li><li>Usage limits on the free plan</li></ul>
+      <h1>What we delivered</h1>
+      <table class="confluenceTable"><tbody>
+        <tr><th>Story</th><th>Points</th></tr>
+        <tr><td><a href="https://acme.atlassian.net/browse/WEB-130">https://acme.atlassian.net/browse/WEB-130</a></td><td>5</td></tr>
+        <tr><td><a href="https://acme.atlassian.net/browse/WEB-131">https://acme.atlassian.net/browse/WEB-131</a></td><td>8</td></tr>
+        <tr><td><a href="https://acme.atlassian.net/browse/WEB-135">WEB-135</a></td><td>3</td></tr>
+      </tbody></table>
+      <p>Velocity: <strong>13 of 16</strong> points.</p>
+      <h1>Demo</h1>
+      <ol><li>Create an account at <a href="https://example.com">staging</a></li><li>Verify the email</li><li>Walk through the setup wizard</li></ol>
+      <blockquote>Tip: use the "demo" promo code to skip billing.</blockquote>
+      <h1>Metrics</h1>
+      <p>Activation went from <span style="color: #16866e"><b>31%</b></span> to <span style="color: #16866e"><b>44%</b></span> in the pilot group.</p>
+      <pre><code>funnel: visit → sign-up 12% → verified 81% → activated 44%</code></pre>
+      <h1>Next sprint</h1>
+      <ul><li>Team invitations</li><li>SSO for business plans</li><li>Address the review comments on <a href="https://acme.atlassian.net/browse/WEB-135">free plan limits</a></li></ul>
+      <h1>Questions</h1>`;
+    const DEMO = {
+      'WEB-130': { key: 'WEB-130', summary: 'Sign-up with email verification', status: 'Done', category: 'done', icon: '', type: 'Story' },
+      'WEB-131': { key: 'WEB-131', summary: 'Guided workspace setup wizard', status: 'Done', category: 'done', icon: '', type: 'Story' },
+      'WEB-135': { key: 'WEB-135', summary: 'Usage limits on the free plan', status: 'In Review', category: 'indeterminate', icon: '', type: 'Story' },
+    };
+    const sampleDeck = S.buildSlides(sample);
+    await S.enrichIssueLinks(sampleDeck, ORIGIN, async (k) => DEMO[k] || null);
+    const p = S.createPresenter();
+    const params = new URLSearchParams(location.search);
+    const demoOptions = {
+      theme: params.get('theme') || 'learntime',
+      textSize: params.get('text') || 'medium',
+      cover: params.get('cover') !== '0',
+      footer: params.get('footer') !== '0',
+    };
+    const deck = S.renderDeck(p, { key: 'WEB-142', summary: 'Sprint 42 review: self-service onboarding' }, sampleDeck, demoOptions);
+    if (params.get('slide')) deck.go(Number(params.get('slide')) - 1);
+    if (params.has('overview')) window.dispatchEvent(new KeyboardEvent('keydown', { key: 'g' }));
+  </script>
+</body>
+</html>
